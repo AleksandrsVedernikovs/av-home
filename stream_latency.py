@@ -1,11 +1,13 @@
+#!/usr/bin/env python3
 """CLI utility to measure streaming latency from the OpenAI Chat Completions API."""
 from __future__ import annotations
 
 import argparse
 import json
 import os
+import sys
 import time
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 from typing import Iterable, List
 
 from openai import OpenAI
@@ -26,8 +28,10 @@ def compute_metrics(start: float, timestamps: List[float], last: float) -> Laten
         start: The timestamp captured before sending the request.
         timestamps: A list of timestamps for each token received.
         last: The timestamp captured after the stream completes.
-    """
 
+    Returns:
+        LatencyMetrics containing TTFT, average TBT, total latency, and token count.
+    """
     token_count = len(timestamps)
     ttft = timestamps[0] - start if token_count else 0.0
 
@@ -39,12 +43,26 @@ def compute_metrics(start: float, timestamps: List[float], last: float) -> Laten
 
     total_latency = last - start
 
-    return LatencyMetrics(ttft=ttft, tbt=tbt, total_latency=total_latency, token_count=token_count)
+    return LatencyMetrics(
+        ttft=ttft,
+        tbt=tbt,
+        total_latency=total_latency,
+        token_count=token_count,
+    )
 
 
 def measure_latency(prompt: str) -> LatencyMetrics:
-    """Stream a response from the OpenAI API and return latency metrics."""
+    """Stream a response from the OpenAI API and return latency metrics.
 
+    Args:
+        prompt: Prompt to send to the model.
+
+    Returns:
+        LatencyMetrics with measured latencies.
+
+    Raises:
+        RuntimeError: If OPENAI_API_KEY is not set.
+    """
     api_key = os.getenv("OPENAI_API_KEY")
     if not api_key:
         raise RuntimeError("OPENAI_API_KEY environment variable is not set.")
@@ -55,12 +73,14 @@ def measure_latency(prompt: str) -> LatencyMetrics:
     start = time.perf_counter()
     timestamps: List[float] = []
 
+    # Start streaming Chat Completions response
     stream = client.chat.completions.create(
         model=model,
         messages=[{"role": "user", "content": prompt}],
         stream=True,
     )
 
+    # Record a timestamp for each emitted text/tool delta
     for chunk in stream:
         if not chunk.choices:
             continue
@@ -80,15 +100,39 @@ def measure_latency(prompt: str) -> LatencyMetrics:
 
 
 def _parse_args(argv: Iterable[str]) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Measure streaming latency for an OpenAI Chat Completion.")
+    """Parse CLI args.
+
+    Args:
+        argv: Iterable of CLI arg strings (excluding program name).
+
+    Returns:
+        Parsed argparse namespace with .prompt.
+    """
+    parser = argparse.ArgumentParser(
+        description="Measure streaming latency for an OpenAI Chat Completion."
+    )
     parser.add_argument("prompt", help="Prompt to send to the model.")
     return parser.parse_args(list(argv))
 
 
 def main(argv: Iterable[str] | None = None) -> None:
-    args = _parse_args(argv or [])
+    """CLI entry point.
+
+    If argv is provided, it is parsed (useful for tests).
+    Otherwise, defaults to sys.argv[1:] when run as a script.
+    """
+    args = _parse_args(argv if argv is not None else sys.argv[1:])
     metrics = measure_latency(args.prompt)
-    print(json.dumps(asdict(metrics), indent=2))
+
+    # Round float values to 2 decimal places for clean output
+    result = {
+        "ttft": round(metrics.ttft, 2),
+        "tbt": round(metrics.tbt, 2),
+        "total_latency": round(metrics.total_latency, 2),
+        "token_count": metrics.token_count,
+    }
+
+    print(json.dumps(result, indent=2))
 
 
 if __name__ == "__main__":
